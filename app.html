@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SolarPay - honest solar payback math</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#15130c; color:#f2eee2; min-height:100vh; }
+  .wrap { max-width:860px; margin:0 auto; padding:28px 20px 80px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; }
+  header h1 { font-size:22px; } header h1 span { color:#f5b83d; }
+  header a { color:#9a917d; text-decoration:none; font-size:14px; }
+  .card { background:#1e1a10; border:1px solid #4a3f24; border-radius:12px; padding:18px; margin-bottom:18px; }
+  label { font-size:12px; color:#9a917d; display:block; margin-bottom:4px; }
+  input, select { background:#15130c; border:1px solid #5a4c2a; border-radius:8px; color:#f2eee2; padding:9px 10px; font-size:14px; width:100%; }
+  button { background:#f5b83d; border:none; color:#241b05; font-weight:700; padding:11px 22px; border-radius:9px; font-size:14px; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid #5a4c2a; color:#f5b83d; margin-left:8px; }
+  .row4 { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px; margin-bottom:12px; }
+  h3 { font-size:14px; color:#c9bfa8; margin-bottom:10px; }
+  .verdict { background:#241e10; border:1px solid #5a4a26; border-radius:10px; padding:14px 16px; margin-bottom:14px; font-size:15px; line-height:1.6; }
+  .verdict b { color:#f5b83d; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .stat { background:#15130c; border:1px solid #4a3f24; border-radius:10px; padding:12px; }
+  .stat .v { font-size:20px; font-weight:700; color:#fff; }
+  .stat .k { font-size:11px; color:#9a917d; margin-top:2px; line-height:1.4; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:right; padding:6px 8px; border-bottom:1px solid #33291a; }
+  th { color:#9a917d; font-weight:600; }
+  td:first-child, th:first-child { text-align:left; }
+  tr.crossed td { color:#f5b83d; }
+  .err { color:#ff8a8a; font-size:13px; margin-top:8px; }
+  .note { color:#6e6858; font-size:12px; margin-top:10px; }
+  .tblwrap { max-height:340px; overflow-y:auto; }
+  @media (max-width:640px){ .row4 { grid-template-columns:1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>Solar<span>Pay</span></h1><a href="index.html">home</a></header>
+
+  <div class="card">
+    <h3>Your power</h3>
+    <div class="row4">
+      <div><label>Monthly usage (kWh)</label><input id="kwh" type="number" value="900"></div>
+      <div><label>Rate ($/kWh)</label><input id="rate" type="number" step="0.01" value="0.17"></div>
+      <div><label>Rate climbs (%/yr)</label><input id="esc" type="number" step="0.5" value="3"></div>
+      <div><label>Peak sun hours/day</label><input id="sun" type="number" step="0.1" value="4.5"></div>
+    </div>
+    <h3>The quote</h3>
+    <div class="row4">
+      <div><label>System size (kW)</label><input id="kw" type="number" step="0.5" value="6.5"></div>
+      <div><label>Installed cost ($/W)</label><input id="cpw" type="number" step="0.05" value="2.75"></div>
+      <div><label>Incentives (%)</label><input id="inc" type="number" value="30"></div>
+      <div><label>Panel fade (%/yr)</label><input id="deg" type="number" step="0.1" value="0.5"></div>
+    </div>
+    <button id="go">Run the 25-year math</button><button class="ghost" id="suggest">Right-size for my usage</button>
+    <div class="err" id="err"></div>
+    <div class="note">Savings stop at 100% of your usage - excess production earns nothing here, which is the conservative case. Cash purchase, 25-year horizon.</div>
+  </div>
+
+  <div id="out" style="display:none">
+    <div class="verdict" id="verdict"></div>
+    <div class="card">
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="card">
+      <h3>Year by year</h3>
+      <div class="tblwrap"><table id="tbl">
+        <thead><tr><th>Year</th><th>Production</th><th>Rate</th><th>Savings</th><th>Cumulative</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="note">Gold row = the year your cumulative savings pass the net cost.</div>
+    </div>
+  </div>
+</div>
+<script src="engine.js"></script>
+<script>
+(function(){
+  var F = ['kwh','rate','esc','sun','kw','cpw','inc','deg'];
+  var KEY = 'solarpay-settings';
+  function save(){ var o={}; F.forEach(function(f){o[f]=document.getElementById(f).value;}); try{localStorage.setItem(KEY,JSON.stringify(o));}catch(e){} }
+  function load(){ try{ var o=JSON.parse(localStorage.getItem(KEY)||'null'); if(o) F.forEach(function(f){ if(o[f]!==undefined) document.getElementById(f).value=o[f]; }); }catch(e){} }
+  function fmt$(n){ return '$' + Number(n).toLocaleString('en-US',{maximumFractionDigits:0}); }
+  function run(){
+    var errEl = document.getElementById('err'); errEl.textContent = '';
+    var o = {
+      monthlyKwh: document.getElementById('kwh').value,
+      ratePerKwh: document.getElementById('rate').value,
+      escPct: document.getElementById('esc').value,
+      sunHours: document.getElementById('sun').value,
+      systemKw: document.getElementById('kw').value,
+      costPerWatt: document.getElementById('cpw').value,
+      incentivePct: document.getElementById('inc').value,
+      degradePct: document.getElementById('deg').value
+    };
+    var r;
+    try { r = SolarPayEngine.analyze(o); } catch(e){ errEl.textContent = e.message; return; }
+    save();
+    var v = document.getElementById('verdict');
+    if (r.paybackYears === null) {
+      v.innerHTML = 'At these numbers the system <b>never pays back</b> inside 25 years. Total savings reach ' + fmt$(r.total25Savings) + ' against a net cost of ' + fmt$(r.netCost) + '. Something has to move - a cheaper quote, a higher rate, or a better incentive.';
+    } else {
+      var py = r.paybackYears;
+      var yr = Math.ceil(py);
+      v.innerHTML = 'The roof pays you back in <b>' + py.toFixed(1) + ' years</b> (during year ' + yr + '). After that, the remaining ' + (25 - yr) + '+ years are profit: <b>' + fmt$(r.net25) + '</b> net over 25 years, a ' + r.roiMultiple + 'x return on ' + fmt$(r.netCost) + '.';
+    }
+    var s = document.getElementById('stats');
+    s.innerHTML = '';
+    var cells = [
+      [fmt$(r.netCost), 'net cost after incentives (list ' + fmt$(r.grossCost) + ')'],
+      [fmt$(r.year1Savings), 'year-1 savings (' + r.year1ProductionKwh.toLocaleString() + ' kWh)'],
+      [fmt$(r.year1MonthlyAvgSavings), 'year-1 savings per month'],
+      [r.paybackYears === null ? 'never' : r.paybackYears + ' yrs', 'payback point'],
+      [fmt$(r.total25Savings), 'total 25-year savings'],
+      [r.co2Tons25.toLocaleString() + ' t', 'CO2 avoided over 25 years']
+    ];
+    cells.forEach(function(c){
+      var d = document.createElement('div'); d.className = 'stat';
+      d.innerHTML = '<div class="v">' + c[0] + '</div><div class="k">' + c[1] + '</div>';
+      s.appendChild(d);
+    });
+    var tb = document.querySelector('#tbl tbody'); tb.innerHTML = '';
+    r.rows.forEach(function(row){
+      var tr = document.createElement('tr');
+      if (row.cumSavings >= r.netCost) tr.className = 'crossed';
+      tr.innerHTML = '<td>' + row.year + '</td><td>' + Math.round(row.productionKwh).toLocaleString() + ' kWh</td><td>$' + row.rate.toFixed(2) + '</td><td>' + fmt$(row.savings) + '</td><td>' + fmt$(row.cumSavings) + '</td>';
+      tb.appendChild(tr);
+    });
+    document.getElementById('out').style.display = 'block';
+  }
+  document.getElementById('go').addEventListener('click', run);
+  document.getElementById('suggest').addEventListener('click', function(){
+    try {
+      document.getElementById('kw').value = SolarPayEngine.suggestKw(
+        parseFloat(document.getElementById('kwh').value),
+        parseFloat(document.getElementById('sun').value));
+      save();
+    } catch(e){ document.getElementById('err').textContent = e.message; }
+  });
+  load();
+})();
+</script>
+</body>
+</html>
